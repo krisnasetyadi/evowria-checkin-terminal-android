@@ -1,14 +1,19 @@
 package com.evowria.printerconnector
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.InputType
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.view.Menu
 import android.view.MenuItem
 import android.webkit.WebChromeClient
+import android.webkit.PermissionRequest
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -19,12 +24,25 @@ class MainActivity : ComponentActivity() {
     private lateinit var terminalWebView: WebView
     private lateinit var terminalUrlStore: TerminalUrlStore
     private lateinit var webPrinterBridge: WebPrinterBridge
+    private var pendingCameraRequest: PermissionRequest? = null
 
     private val bluetoothPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { permissionGranted ->
         if (permissionGranted) webPrinterBridge.continueConnectionAfterPermissionGranted()
         else webPrinterBridge.failPendingConnectionForMissingPermission()
+    }
+
+    private val cameraPermissionRequest = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { permissionGranted ->
+        val request = pendingCameraRequest
+        pendingCameraRequest = null
+        if (permissionGranted && request != null) {
+            request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+        } else {
+            request?.deny()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -73,8 +91,55 @@ class MainActivity : ComponentActivity() {
     private fun configureWebView() {
         terminalWebView.settings.javaScriptEnabled = true
         terminalWebView.settings.domStorageEnabled = true
-        terminalWebView.webChromeClient = WebChromeClient()
+        terminalWebView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // QR scanning only needs camera video. Do not expose other
+                // WebView capabilities such as microphone capture.
+                val requestsCamera = request.resources.contains(
+                    PermissionRequest.RESOURCE_VIDEO_CAPTURE,
+                )
+                val isSecureOrigin = request.origin.scheme == "https"
+                if (!requestsCamera || !isSecureOrigin) {
+                    request.deny()
+                    return
+                }
+
+                if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                    return
+                }
+
+                pendingCameraRequest?.deny()
+                pendingCameraRequest = request
+                cameraPermissionRequest.launch(Manifest.permission.CAMERA)
+            }
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                if (pendingCameraRequest === request) pendingCameraRequest = null
+                super.onPermissionRequestCanceled(request)
+            }
+        }
         terminalWebView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest,
+            ): Boolean {
+                val url = request.url
+                val isWhatsAppSupportLink = url.host == "wa.me" ||
+                    url.host == "api.whatsapp.com" ||
+                    url.host?.endsWith(".whatsapp.com") == true
+                if (!isWhatsAppSupportLink) return false
+
+                return try {
+                    startActivity(Intent(Intent.ACTION_VIEW, url))
+                    true
+                } catch (_: ActivityNotFoundException) {
+                    // If the device has no app/browser that can open the link,
+                    // keep the terminal page intact rather than crashing.
+                    false
+                }
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 installWebPrinterApi()
@@ -84,32 +149,57 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openSavedTerminal() {
-        terminalUrlStore.getUrl()?.let { url -> terminalWebView.loadUrl(url) }
+        terminalUrlStore.getUrl()?.let { url ->
+            terminalWebView.loadUrl(url)
+            // Terminal ini dipakai untuk check-in berkecepatan tinggi. Minta
+            // operator memilih printer sebelum tamu pertama datang; mereka
+            // tetap dapat membatalkan bila belum siap menyiapkan printer.
+            terminalWebView.postDelayed({ webPrinterBridge.showPrinterPicker() }, 500)
+        }
             ?: showTerminalUrlDialog()
     }
 
     private fun showTerminalUrlDialog() {
         val urlInput = android.widget.EditText(this).apply {
-            hint = "https://your-domain.com/scan/event-slug"
+            hint = "https://evowria.com/scan/event-slug"
             setText(terminalUrlStore.getUrl().orEmpty())
             inputType = InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+            setTextColor(Color.parseColor("#2B211D"))
+            setHintTextColor(Color.parseColor("#9A918B"))
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F5EEE9"))
+                cornerRadius = dp(14).toFloat()
+            }
         }
 
-        AlertDialog.Builder(this)
-            .setTitle("Terminal URL")
-            .setMessage("Masukkan URL HTTPS halaman check-in untuk event ini.")
-            .setView(urlInput)
-            .setNegativeButton("Batal", null)
-            .setPositiveButton("Buka") { _, _ ->
+        EvowriaDialog.showForm(
+            context = this,
+            eyebrow = "Evowria terminal",
+            title = "Buka meja check-in",
+            message = "Masukkan URL HTTPS halaman check-in untuk acara ini.",
+            content = urlInput,
+            primaryLabel = "Buka terminal",
+            onPrimary = {
+                _ ->
                 val terminalUrl = urlInput.text.toString().trim()
                 if (terminalUrl.startsWith("https://")) {
                     terminalUrlStore.saveUrl(terminalUrl)
                     terminalWebView.loadUrl(terminalUrl)
-                } else showTerminalUrlDialog()
-            }
-            .setCancelable(terminalUrlStore.getUrl() != null)
-            .show()
+                    terminalWebView.postDelayed({ webPrinterBridge.showPrinterPicker() }, 500)
+                    true
+                } else {
+                    urlInput.error = "Gunakan URL yang diawali https://"
+                    false
+                }
+            },
+            cancelable = terminalUrlStore.getUrl() != null,
+        )
     }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
 
     private fun requestBluetoothPermission() {
         val bluetoothPermission = Manifest.permission.BLUETOOTH_CONNECT

@@ -16,8 +16,14 @@ import java.util.UUID
  */
 class BluetoothThermalPrinter {
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+    private val connectionLock = Any()
+
+    @Volatile
     private var bluetoothSocket: BluetoothSocket? = null
+
+    @Volatile
     private var connectedPrinter: BluetoothDevice? = null
+    private var connectionGeneration = 0
 
     @SuppressLint("MissingPermission")
     fun getPairedDevices(): List<BluetoothDevice> =
@@ -27,17 +33,28 @@ class BluetoothThermalPrinter {
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice): PrinterStatus {
         disconnect()
+        val expectedConnectionGeneration = synchronized(connectionLock) { connectionGeneration }
         if (bluetoothAdapter == null) return disconnectedStatus("Bluetooth tidak tersedia di perangkat ini")
         if (!bluetoothAdapter.isEnabled) return disconnectedStatus("Bluetooth belum aktif")
 
         return try {
             val socket = device.createRfcommSocketToServiceRecord(SERIAL_PORT_UUID)
-            bluetoothAdapter.cancelDiscovery()
             socket.connect()
-            bluetoothSocket = socket
-            connectedPrinter = device
+            val connected = synchronized(connectionLock) {
+                if (connectionGeneration != expectedConnectionGeneration) {
+                    false
+                } else {
+                    bluetoothSocket = socket
+                    connectedPrinter = device
+                    true
+                }
+            }
+            if (!connected) {
+                socket.close()
+                return disconnectedStatus("Koneksi printer dibatalkan")
+            }
             getStatus()
-        } catch (error: IOException) {
+        } catch (error: Exception) {
             disconnect()
             disconnectedStatus(error.message ?: "Tidak dapat terhubung ke printer")
         }
@@ -45,11 +62,14 @@ class BluetoothThermalPrinter {
 
     @SuppressLint("MissingPermission")
     fun getStatus(): PrinterStatus {
-        val isConnected = bluetoothSocket?.isConnected == true
+        val (socket, device) = synchronized(connectionLock) {
+            bluetoothSocket to connectedPrinter
+        }
+        val isConnected = socket?.isConnected == true
         return PrinterStatus(
             available = bluetoothAdapter != null,
             connected = isConnected,
-            printerName = connectedPrinter?.name ?: connectedPrinter?.address,
+            printerName = device?.name ?: device?.address,
             detail = if (isConnected) null else "Printer belum terhubung",
         )
     }
@@ -73,6 +93,9 @@ class BluetoothThermalPrinter {
         output.write("${label.guestName}\n".toByteArray(PRINTER_CHARSET))
         output.write(EscPosCommands.boldOff)
         output.write(labelDetails(label).toByteArray(PRINTER_CHARSET))
+        // A short grip area after each label on a common 58 mm thermal printer.
+        // This gives the usher enough paper to grip before tearing the label.
+        output.write(EscPosCommands.tearOffFeed)
         output.write(EscPosCommands.feedAndPartialCut)
         output.flush()
         PrintResult(PrintJobStatus.PRINTED)
@@ -81,16 +104,21 @@ class BluetoothThermalPrinter {
     }
 
     fun disconnect() {
+        val socket = synchronized(connectionLock) {
+            connectionGeneration += 1
+            val existingSocket = bluetoothSocket
+            bluetoothSocket = null
+            connectedPrinter = null
+            existingSocket
+        }
         try {
-            bluetoothSocket?.close()
+            socket?.close()
         } catch (_: IOException) {
             // The printer may already have closed its connection.
         }
-        bluetoothSocket = null
-        connectedPrinter = null
     }
 
-    private fun requireOutputStream() = bluetoothSocket
+    private fun requireOutputStream() = synchronized(connectionLock) { bluetoothSocket }
         ?.takeIf { socket -> socket.isConnected }
         ?.outputStream
         ?: throw IOException("Printer belum terhubung")
@@ -111,6 +139,7 @@ class BluetoothThermalPrinter {
         val centerAlign = byteArrayOf(0x1B, 0x61, 0x01)
         val boldOn = byteArrayOf(0x1B, 0x45, 0x01)
         val boldOff = byteArrayOf(0x1B, 0x45, 0x00)
+        val tearOffFeed = "\n".repeat(4).toByteArray(PRINTER_CHARSET)
         val feedAndPartialCut = byteArrayOf(0x1D, 0x56, 0x01)
     }
 
