@@ -5,10 +5,11 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.text.InputType
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Bundle
+import android.text.InputType
 import android.view.Menu
 import android.view.MenuItem
 import android.webkit.WebChromeClient
@@ -16,8 +17,14 @@ import android.webkit.PermissionRequest
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 /** Hosts the web terminal and wires it to the native printer bridge. */
 class MainActivity : ComponentActivity() {
@@ -25,6 +32,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var terminalUrlStore: TerminalUrlStore
     private lateinit var webPrinterBridge: WebPrinterBridge
     private var pendingCameraRequest: PermissionRequest? = null
+    private val terminalQrScanner by lazy {
+        GmsBarcodeScanning.getClient(
+            this,
+            GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .enableAutoZoom()
+                .build(),
+        )
+    }
 
     private val bluetoothPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -150,19 +166,16 @@ class MainActivity : ComponentActivity() {
 
     private fun openSavedTerminal() {
         terminalUrlStore.getUrl()?.let { url ->
-            terminalWebView.loadUrl(url)
-            // Terminal ini dipakai untuk check-in berkecepatan tinggi. Minta
-            // operator memilih printer sebelum tamu pertama datang; mereka
-            // tetap dapat membatalkan bila belum siap menyiapkan printer.
-            terminalWebView.postDelayed({ webPrinterBridge.showPrinterPicker() }, 500)
+            openTerminal(url)
         }
             ?: showTerminalUrlDialog()
     }
 
     private fun showTerminalUrlDialog() {
-        val urlInput = android.widget.EditText(this).apply {
+        val urlInput = EditText(this).apply {
             hint = "https://evowria.com/scan/event-slug"
-            setText(terminalUrlStore.getUrl().orEmpty())
+            setText(terminalUrlStore.getUrl() ?: TERMINAL_URL_PREFIX)
+            setSelection(text.length)
             inputType = InputType.TYPE_TEXT_VARIATION_URI
             setSingleLine(true)
             setTextColor(Color.parseColor("#2B211D"))
@@ -173,29 +186,109 @@ class MainActivity : ComponentActivity() {
                 cornerRadius = dp(14).toFloat()
             }
         }
+        val scanQrButton = Button(this).apply {
+            text = "Scan QR acara"
+            isAllCaps = false
+            setCompoundDrawablesWithIntrinsicBounds(
+                android.R.drawable.ic_menu_camera,
+                0,
+                0,
+                0,
+            )
+            compoundDrawablePadding = dp(8)
+            setTextColor(Color.parseColor("#2B211D"))
+            setPadding(dp(16), dp(6), dp(16), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F5EEE9"))
+                cornerRadius = dp(14).toFloat()
+            }
+        }
+        val setupContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                scanQrButton,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            addView(
+                urlInput,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(10) },
+            )
+        }
 
-        EvowriaDialog.showForm(
+        lateinit var setupDialog: android.app.Dialog
+        scanQrButton.setOnClickListener {
+            setupDialog.dismiss()
+            scanTerminalQr()
+        }
+        setupDialog = EvowriaDialog.showForm(
             context = this,
             eyebrow = "Evowria terminal",
             title = "Buka meja check-in",
-            message = "Masukkan URL HTTPS halaman check-in untuk acara ini.",
-            content = urlInput,
+            message = "Scan QR acara untuk mengisi otomatis, atau cukup ketik kode acara setelah URL.",
+            content = setupContent,
             primaryLabel = "Buka terminal",
             onPrimary = {
                 _ ->
                 val terminalUrl = urlInput.text.toString().trim()
-                if (terminalUrl.startsWith("https://")) {
-                    terminalUrlStore.saveUrl(terminalUrl)
-                    terminalWebView.loadUrl(terminalUrl)
-                    terminalWebView.postDelayed({ webPrinterBridge.showPrinterPicker() }, 500)
+                if (isTerminalUrl(terminalUrl)) {
+                    openTerminal(terminalUrl)
                     true
                 } else {
-                    urlInput.error = "Gunakan URL yang diawali https://"
+                    urlInput.error = "Gunakan URL https://.../scan/kode-acara"
                     false
                 }
             },
             cancelable = terminalUrlStore.getUrl() != null,
         )
+    }
+
+    private fun scanTerminalQr() {
+        terminalQrScanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val terminalUrl = barcode.rawValue?.trim().orEmpty()
+                if (isTerminalUrl(terminalUrl)) {
+                    openTerminal(terminalUrl)
+                } else {
+                    EvowriaDialog.showNotice(
+                        context = this,
+                        eyebrow = "QR tidak sesuai",
+                        title = "Gunakan QR acara",
+                        message = "Scan QR yang berisi link https://.../scan/kode-acara.",
+                    ).setOnDismissListener { showTerminalUrlDialog() }
+                }
+            }
+            .addOnCanceledListener { showTerminalUrlDialog() }
+            .addOnFailureListener {
+                EvowriaDialog.showNotice(
+                    context = this,
+                    eyebrow = "Scanner belum siap",
+                    title = "QR belum dapat dipindai",
+                    message = "Pastikan Google Play services dan koneksi internet tersedia, lalu coba lagi.",
+                ).setOnDismissListener { showTerminalUrlDialog() }
+            }
+    }
+
+    private fun openTerminal(terminalUrl: String) {
+        terminalUrlStore.saveUrl(terminalUrl)
+        terminalWebView.loadUrl(terminalUrl)
+        // Terminal ini dipakai untuk check-in berkecepatan tinggi. Minta
+        // operator memilih printer sebelum tamu pertama datang; mereka
+        // tetap dapat membatalkan bila belum siap menyiapkan printer.
+        terminalWebView.postDelayed({ webPrinterBridge.showPrinterPicker() }, 500)
+    }
+
+    private fun isTerminalUrl(value: String): Boolean {
+        val uri = Uri.parse(value)
+        return uri.scheme == "https" &&
+            uri.host != null &&
+            uri.path?.startsWith("/scan/") == true &&
+            uri.pathSegments.getOrNull(1)?.isNotBlank() == true
     }
 
     private fun dp(value: Int): Int =
@@ -219,6 +312,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val MENU_TERMINAL_URL = "Terminal URL"
         const val MENU_PRINTER = "Printer settings"
+        const val TERMINAL_URL_PREFIX = "https://www.evowria.com/scan/"
         const val NATIVE_BRIDGE_NAME = "AndroidPrinterConnector"
 
         val WEB_PRINTER_API_SCRIPT = """

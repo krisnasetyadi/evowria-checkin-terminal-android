@@ -32,4 +32,5 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-ktx:1.10.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }
