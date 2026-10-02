@@ -25,6 +25,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** Hosts the web terminal and wires it to the native printer bridge. */
 class MainActivity : ComponentActivity() {
@@ -64,7 +67,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "Evowria Check-in Terminal"
+        title = "Evowria Check-in"
 
         terminalUrlStore = TerminalUrlStore(this)
         terminalWebView = WebView(this)
@@ -88,7 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.title) {
         MENU_TERMINAL_URL -> {
-            showTerminalUrlDialog()
+            showEventPicker()
             true
         }
         MENU_PRINTER -> {
@@ -168,15 +171,15 @@ class MainActivity : ComponentActivity() {
         terminalUrlStore.getUrl()?.let { url ->
             openTerminal(url)
         }
-            ?: showTerminalUrlDialog()
+            ?: showEventPicker()
     }
 
-    private fun showTerminalUrlDialog() {
-        val urlInput = EditText(this).apply {
-            hint = "https://evowria.com/scan/event-slug"
-            setText(terminalUrlStore.getUrl() ?: TERMINAL_URL_PREFIX)
+    private fun showEventPicker() {
+        val eventCodeInput = EditText(this).apply {
+            hint = "Contoh: dananglidya"
+            setText(terminalUrlStore.getUrl()?.let(::eventCodeFromUrl).orEmpty())
             setSelection(text.length)
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
+            inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
             setTextColor(Color.parseColor("#2B211D"))
             setHintTextColor(Color.parseColor("#9A918B"))
@@ -213,7 +216,7 @@ class MainActivity : ComponentActivity() {
                 ),
             )
             addView(
-                urlInput,
+                eventCodeInput,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -228,19 +231,19 @@ class MainActivity : ComponentActivity() {
         }
         setupDialog = EvowriaDialog.showForm(
             context = this,
-            eyebrow = "Evowria terminal",
-            title = "Buka meja check-in",
-            message = "Scan QR acara untuk mengisi otomatis, atau cukup ketik kode acara setelah URL.",
+            eyebrow = "Evowria check-in",
+            title = "Pilih acara",
+            message = "Scan QR setup dari PIC Evowria atau masukkan kode acara. Nama pasangan akan ditampilkan sebelum meja dibuka.",
             content = setupContent,
-            primaryLabel = "Buka terminal",
+            primaryLabel = "Cari acara",
             onPrimary = {
                 _ ->
-                val terminalUrl = urlInput.text.toString().trim()
-                if (isTerminalUrl(terminalUrl)) {
-                    openTerminal(terminalUrl)
+                val eventCode = eventCodeInput.text.toString().trim().lowercase()
+                if (isEventCode(eventCode)) {
+                    validateAndConfirmEvent(TERMINAL_URL_PREFIX + eventCode)
                     true
                 } else {
-                    urlInput.error = "Gunakan URL https://.../scan/kode-acara"
+                    eventCodeInput.error = "Masukkan kode acara, misalnya dananglidya"
                     false
                 }
             },
@@ -253,25 +256,96 @@ class MainActivity : ComponentActivity() {
             .addOnSuccessListener { barcode ->
                 val terminalUrl = barcode.rawValue?.trim().orEmpty()
                 if (isTerminalUrl(terminalUrl)) {
-                    openTerminal(terminalUrl)
+                    validateAndConfirmEvent(terminalUrl)
                 } else {
                     EvowriaDialog.showNotice(
                         context = this,
                         eyebrow = "QR tidak sesuai",
                         title = "Gunakan QR acara",
                         message = "Scan QR yang berisi link https://.../scan/kode-acara.",
-                    ).setOnDismissListener { showTerminalUrlDialog() }
+                    ).setOnDismissListener { showEventPicker() }
                 }
             }
-            .addOnCanceledListener { showTerminalUrlDialog() }
+            .addOnCanceledListener { showEventPicker() }
             .addOnFailureListener {
                 EvowriaDialog.showNotice(
                     context = this,
                     eyebrow = "Scanner belum siap",
                     title = "QR belum dapat dipindai",
                     message = "Pastikan Google Play services dan koneksi internet tersedia, lalu coba lagi.",
-                ).setOnDismissListener { showTerminalUrlDialog() }
+                ).setOnDismissListener { showEventPicker() }
             }
+    }
+
+    private fun validateAndConfirmEvent(terminalUrl: String) {
+        val eventCode = eventCodeFromUrl(terminalUrl)
+        if (eventCode == null) {
+            showEventLookupError("Kode acara tidak valid.")
+            return
+        }
+        Thread {
+            try {
+                val terminalUri = Uri.parse(terminalUrl)
+                val lookupUri = terminalUri.buildUpon()
+                    .path("/api/checkin/event")
+                    .clearQuery()
+                    .appendQueryParameter("code", eventCode)
+                    .build()
+                val connection = URL(lookupUri.toString()).openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 8_000
+                connection.readTimeout = 8_000
+                val responseCode = connection.responseCode
+                val responseBody = (if (responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                })?.bufferedReader()?.use { it.readText() }.orEmpty()
+                connection.disconnect()
+                if (responseCode !in 200..299) throw IllegalStateException("Acara tidak ditemukan.")
+
+                val event = JSONObject(responseBody).getJSONObject("event")
+                val coupleNames = event.getString("coupleNames")
+                val dateText = event.optString("dateText")
+                val venue = event.optString("venue")
+                runOnUiThread {
+                    showEventConfirmation(terminalUrl, coupleNames, dateText, venue)
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    showEventLookupError("Periksa kode acara dan koneksi internet, lalu coba lagi.")
+                }
+            }
+        }.start()
+    }
+
+    private fun showEventConfirmation(
+        terminalUrl: String,
+        coupleNames: String,
+        dateText: String,
+        venue: String,
+    ) {
+        val description = listOf(dateText, venue)
+            .filter { it.isNotBlank() }
+            .joinToString(" • ")
+        EvowriaDialog.showChoices(
+            context = this,
+            eyebrow = "Acara ditemukan",
+            title = "Gunakan acara ini?",
+            message = "Pastikan acara sesuai sebelum petugas memasukkan PIN.",
+            choices = listOf(EvowriaDialog.Choice(coupleNames, description)),
+            onSelected = { openTerminal(terminalUrl) },
+            onCancelled = ::showEventPicker,
+        )
+    }
+
+    private fun showEventLookupError(message: String) {
+        EvowriaDialog.showNotice(
+            context = this,
+            eyebrow = "Acara belum ditemukan",
+            title = "Periksa kode acara",
+            message = message,
+        ).setOnDismissListener { showEventPicker() }
     }
 
     private fun openTerminal(terminalUrl: String) {
@@ -290,6 +364,14 @@ class MainActivity : ComponentActivity() {
             uri.path?.startsWith("/scan/") == true &&
             uri.pathSegments.getOrNull(1)?.isNotBlank() == true
     }
+
+    private fun eventCodeFromUrl(value: String): String? {
+        val uri = Uri.parse(value)
+        return uri.pathSegments.getOrNull(1)?.takeIf(::isEventCode)
+    }
+
+    private fun isEventCode(value: String): Boolean =
+        value.matches(Regex("^[a-z0-9][a-z0-9-]{1,79}$"))
 
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
@@ -310,8 +392,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val MENU_TERMINAL_URL = "Terminal URL"
-        const val MENU_PRINTER = "Printer settings"
+        const val MENU_TERMINAL_URL = "Ganti acara"
+        const val MENU_PRINTER = "Pilih printer"
         const val TERMINAL_URL_PREFIX = "https://www.evowria.com/scan/"
         const val NATIVE_BRIDGE_NAME = "AndroidPrinterConnector"
 

@@ -1,12 +1,12 @@
-# Evowria Check-in Terminal for Android
+# Evowria Check-in for Android
 
-An Android terminal for Evowria check-in operations. It hosts the web check-in flow and adds reliable Bluetooth ESC/POS printing for internal guest labels.
+An Android app for Evowria check-in operations. It hosts the web check-in flow and adds reliable Bluetooth ESC/POS printing for internal guest labels.
 
 Read the [architecture guide](docs/ARCHITECTURE.md) before changing the code. Installation and APK build steps are available in the [development guide](docs/DEVELOPMENT.md).
 
 ## What it does
 
-- Opens a configurable HTTPS terminal URL.
+- Selects an event by setup QR or exact event code, then confirms the couple before opening check-in.
 - Exposes `window.EvowriaPrinter` to the loaded web page.
 - Connects to an already-paired Bluetooth Classic thermal printer.
 - Prints a 58 mm guest label using ESC/POS.
@@ -22,7 +22,7 @@ The source is scaffolded. Building an APK requires Android Studio (JDK 17 and An
 1. Open the project in Android Studio.
 2. Let Android Studio install the requested Android SDK and Gradle dependencies.
 3. Build and install the `app` debug variant.
-4. In the app, enter the HTTPS check-in URL, then pair the thermal printer from Android settings.
+4. In the app, scan the event setup QR or enter its event code, confirm the couple, then pair the thermal printer from Android settings.
 5. Use **Connect printer** in the web terminal before printing a test label.
 
 ## Web bridge
