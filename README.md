@@ -31,7 +31,7 @@ The source is scaffolded. Building an APK requires Android Studio (JDK 17 and An
 window.EvowriaPrinter.getPrinterStatus()
 window.EvowriaPrinter.connect()
 window.EvowriaPrinter.testPrint()
-window.EvowriaPrinter.printGuestLabel({ printJobId, guestName, side, category, pax })
+window.EvowriaPrinter.printGuestLabel({ printJobId, guestCode, guestName, side, category, pax, table })
 ```
 
 Each method resolves to a serializable status object. The web app must treat `UNKNOWN` as requiring a physical check of the printer.

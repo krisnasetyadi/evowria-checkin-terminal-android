@@ -87,12 +87,15 @@ class BluetoothThermalPrinter {
     fun printGuestLabel(label: GuestLabel): PrintResult = try {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
-        output.write(EscPosCommands.centerAlign)
-        output.write("ID TAMU: ${label.guestCode}\n".toByteArray(PRINTER_CHARSET))
-        output.write(EscPosCommands.boldOn)
-        output.write("${label.guestName}\n".toByteArray(PRINTER_CHARSET))
-        output.write(EscPosCommands.boldOff)
-        output.write(labelDetails(label).toByteArray(PRINTER_CHARSET))
+        output.write(EscPosCommands.leftAlign)
+        // One fact per pair of lines, running down the paper: the usher reads
+        // it at a glance on an envelope, and a long name simply wraps.
+        labelFields(label).forEach { (name, value) ->
+            output.write("$name\n".toByteArray(PRINTER_CHARSET))
+            output.write(EscPosCommands.boldOn)
+            output.write("$value\n".toByteArray(PRINTER_CHARSET))
+            output.write(EscPosCommands.boldOff)
+        }
         // A short grip area after each label on a common 58 mm thermal printer.
         // This gives the usher enough paper to grip before tearing the label.
         output.write(EscPosCommands.tearOffFeed)
@@ -123,10 +126,17 @@ class BluetoothThermalPrinter {
         ?.outputStream
         ?: throw IOException("Printer belum terhubung")
 
-    private fun labelDetails(label: GuestLabel): String {
-        val details = listOfNotNull(label.side, label.category, "${label.pax} pax")
-        return details.joinToString(" | ") + "\n\n"
-    }
+    /** The label's lines, top to bottom; a fact the guest lacks is left out. */
+    private fun labelFields(label: GuestLabel): List<Pair<String, String>> = listOfNotNull(
+        "Kode tamu" to label.guestCode,
+        "Nama tamu" to label.guestName,
+        listOfNotNull(label.side, label.category)
+            .joinToString(" - ")
+            .takeIf { it.isNotBlank() }
+            ?.let { "Keterangan" to it },
+        "Jumlah" to "${label.pax} orang",
+        label.table?.let { "Meja" to it },
+    )
 
     private fun disconnectedStatus(message: String) = PrinterStatus(
         available = bluetoothAdapter != null,
@@ -136,7 +146,7 @@ class BluetoothThermalPrinter {
 
     private object EscPosCommands {
         val initialize = byteArrayOf(0x1B, 0x40)
-        val centerAlign = byteArrayOf(0x1B, 0x61, 0x01)
+        val leftAlign = byteArrayOf(0x1B, 0x61, 0x00)
         val boldOn = byteArrayOf(0x1B, 0x45, 0x01)
         val boldOff = byteArrayOf(0x1B, 0x45, 0x00)
         val tearOffFeed = "\n".repeat(4).toByteArray(PRINTER_CHARSET)
