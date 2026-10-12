@@ -88,12 +88,19 @@ class BluetoothThermalPrinter {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
         output.write(EscPosCommands.leftAlign)
-        // One fact per pair of lines, running down the paper: the usher reads
-        // it at a glance on an envelope, and a long name simply wraps.
-        labelFields(label).forEach { (name, value) ->
-            output.write("$name\n".toByteArray(PRINTER_CHARSET))
+        // One fact per caption + value, running down the paper. The caption
+        // stays small; the value is printed large so the couple can read an
+        // envelope without picking it up. What identifies the guest (code,
+        // name, table) is double width and height, the rest double height.
+        labelFields(label).forEach { field ->
+            output.write("${field.caption}\n".toByteArray(PRINTER_CHARSET))
             output.write(EscPosCommands.boldOn)
-            output.write("$value\n".toByteArray(PRINTER_CHARSET))
+            output.write(if (field.isLarge) EscPosCommands.sizeLarge else EscPosCommands.sizeTall)
+            val lineWidth = if (field.isLarge) LARGE_LINE_CHARS else NORMAL_LINE_CHARS
+            wrapWords(field.value, lineWidth).forEach { line ->
+                output.write("$line\n".toByteArray(PRINTER_CHARSET))
+            }
+            output.write(EscPosCommands.sizeNormal)
             output.write(EscPosCommands.boldOff)
         }
         // A short grip area after each label on a common 58 mm thermal printer.
@@ -127,16 +134,52 @@ class BluetoothThermalPrinter {
         ?: throw IOException("Printer belum terhubung")
 
     /** The label's lines, top to bottom; a fact the guest lacks is left out. */
-    private fun labelFields(label: GuestLabel): List<Pair<String, String>> = listOfNotNull(
-        "Kode tamu" to label.guestCode,
-        "Nama tamu" to label.guestName,
+    private fun labelFields(label: GuestLabel): List<LabelField> = listOfNotNull(
+        LabelField("Kode tamu", label.guestCode, isLarge = true),
+        LabelField("Nama tamu", label.guestName, isLarge = true),
         listOfNotNull(label.side, label.category)
             .joinToString(" - ")
             .takeIf { it.isNotBlank() }
-            ?.let { "Keterangan" to it },
-        "Jumlah" to "${label.pax} orang",
-        label.table?.let { "Meja" to it },
+            ?.let { LabelField("Keterangan", it) },
+        LabelField("Jumlah", "${label.pax} orang"),
+        label.table?.let { LabelField("Meja", it, isLarge = true) },
     )
+
+    private data class LabelField(
+        val caption: String,
+        val value: String,
+        val isLarge: Boolean = false,
+    )
+
+    /**
+     * Breaks a value at spaces so it fits the paper. The printer would wrap by
+     * itself, but in the middle of a word; a word longer than a line is cut.
+     */
+    private fun wrapWords(value: String, lineWidth: Int): List<String> {
+        val lines = mutableListOf<String>()
+        var line = ""
+        value.trim().split(' ').filter { it.isNotEmpty() }.forEach { word ->
+            var rest = word
+            while (rest.length > lineWidth) {
+                if (line.isNotEmpty()) {
+                    lines += line
+                    line = ""
+                }
+                lines += rest.take(lineWidth)
+                rest = rest.drop(lineWidth)
+            }
+            line = when {
+                line.isEmpty() -> rest
+                line.length + 1 + rest.length <= lineWidth -> "$line $rest"
+                else -> {
+                    lines += line
+                    rest
+                }
+            }
+        }
+        if (line.isNotEmpty()) lines += line
+        return lines
+    }
 
     private fun disconnectedStatus(message: String) = PrinterStatus(
         available = bluetoothAdapter != null,
@@ -149,6 +192,11 @@ class BluetoothThermalPrinter {
         val leftAlign = byteArrayOf(0x1B, 0x61, 0x00)
         val boldOn = byteArrayOf(0x1B, 0x45, 0x01)
         val boldOff = byteArrayOf(0x1B, 0x45, 0x00)
+
+        // GS ! n: character size. High nibble = extra width, low = extra height.
+        val sizeNormal = byteArrayOf(0x1D, 0x21, 0x00)
+        val sizeTall = byteArrayOf(0x1D, 0x21, 0x01)
+        val sizeLarge = byteArrayOf(0x1D, 0x21, 0x11)
         val tearOffFeed = "\n".repeat(4).toByteArray(PRINTER_CHARSET)
         val feedAndPartialCut = byteArrayOf(0x1D, 0x56, 0x01)
     }
@@ -156,5 +204,9 @@ class BluetoothThermalPrinter {
     private companion object {
         val SERIAL_PORT_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         val PRINTER_CHARSET: Charset = Charsets.UTF_8
+
+        // A 58 mm printer fits 32 characters a line; double width halves that.
+        const val NORMAL_LINE_CHARS = 32
+        const val LARGE_LINE_CHARS = 16
     }
 }
