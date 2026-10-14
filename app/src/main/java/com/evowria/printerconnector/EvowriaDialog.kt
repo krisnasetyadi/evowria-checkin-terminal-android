@@ -145,7 +145,8 @@ object EvowriaDialog {
         body.addView(actions)
     }
 
-    private fun choiceRow(context: Context, choice: Choice): LinearLayout = LinearLayout(context).apply {
+    /** One tappable row, as used by [showChoices]; also used by the event picker. */
+    fun choiceRow(context: Context, choice: Choice): LinearLayout = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         isClickable = true
         isFocusable = true
