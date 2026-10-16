@@ -10,6 +10,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.webkit.WebChromeClient
@@ -28,6 +29,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -403,14 +405,29 @@ class MainActivity : ComponentActivity() {
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 8_000
                 connection.readTimeout = 8_000
-                val responseCode = connection.responseCode
-                val responseBody = (if (responseCode in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                })?.bufferedReader()?.use { it.readText() }.orEmpty()
-                connection.disconnect()
-                if (responseCode !in 200..299) throw IllegalStateException("Acara tidak ditemukan.")
+                val responseCode: Int
+                val responseBody: String
+                try {
+                    responseCode = connection.responseCode
+                    responseBody = (if (responseCode in 200..299) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream
+                    })?.bufferedReader()?.use { it.readText() }.orEmpty()
+                } finally {
+                    connection.disconnect()
+                }
+                if (responseCode !in 200..299) {
+                    Log.w(TAG, "Event lookup $lookupUri returned $responseCode: $responseBody")
+                    val message = when (responseCode) {
+                        404 -> "Acara dengan kode \"$eventCode\" tidak ditemukan. Periksa QR dari admin."
+                        400 -> "Kode acara tidak valid."
+                        429 -> "Terlalu banyak kode acara salah. Tunggu beberapa menit lalu coba lagi."
+                        else -> "Server belum dapat memeriksa acara (kode $responseCode). Hubungi admin."
+                    }
+                    runOnUiThread { showEventLookupError(message) }
+                    return@Thread
+                }
 
                 val event = JSONObject(responseBody).getJSONObject("event")
                 val coupleNames = event.getString("coupleNames")
@@ -419,9 +436,15 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     showEventConfirmation(terminalUrl, coupleNames, dateText, venue)
                 }
-            } catch (_: Exception) {
+            } catch (error: IOException) {
+                Log.w(TAG, "Event lookup for $terminalUrl failed", error)
                 runOnUiThread {
-                    showEventLookupError("Periksa kode acara dan koneksi internet, lalu coba lagi.")
+                    showEventLookupError("Server tidak dapat dihubungi. Periksa koneksi internet, lalu coba lagi.")
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Event lookup for $terminalUrl returned an unexpected response", error)
+                runOnUiThread {
+                    showEventLookupError("Jawaban server tidak dapat dibaca. Hubungi admin.")
                 }
             }
         }.start()
@@ -516,6 +539,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
+        const val TAG = "EvowriaCheckin"
         const val MENU_TERMINAL_URL = "Ganti acara"
         const val MENU_PRINTER = "Pilih printer"
         const val MAX_LISTED_EVENTS = 6
