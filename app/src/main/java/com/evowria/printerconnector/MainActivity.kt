@@ -20,8 +20,10 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.widget.doAfterTextChanged
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -33,6 +35,7 @@ import java.net.URL
 class MainActivity : ComponentActivity() {
     private lateinit var terminalWebView: WebView
     private lateinit var terminalUrlStore: TerminalUrlStore
+    private lateinit var recentEventStore: RecentEventStore
     private lateinit var webPrinterBridge: WebPrinterBridge
     private var pendingCameraRequest: PermissionRequest? = null
     private val terminalQrScanner by lazy {
@@ -67,9 +70,12 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "Evowria Check-in"
+        title = getString(R.string.app_name)
+        // Dev builds can be inspected from chrome://inspect on the laptop.
+        if (BuildConfig.LOCAL_SERVER_ALLOWED) WebView.setWebContentsDebuggingEnabled(true)
 
         terminalUrlStore = TerminalUrlStore(this)
+        recentEventStore = RecentEventStore(this)
         terminalWebView = WebView(this)
         webPrinterBridge = WebPrinterBridge(
             activity = this,
@@ -117,7 +123,10 @@ class MainActivity : ComponentActivity() {
                 val requestsCamera = request.resources.contains(
                     PermissionRequest.RESOURCE_VIDEO_CAPTURE,
                 )
-                val isSecureOrigin = request.origin.scheme == "https"
+                // Dev builds also allow http://localhost (via `adb reverse`),
+                // which the WebView itself treats as a secure origin.
+                val isSecureOrigin = request.origin.scheme == "https" ||
+                    (BuildConfig.LOCAL_SERVER_ALLOWED && request.origin.host in LOCAL_HOSTS)
                 if (!requestsCamera || !isSecureOrigin) {
                     request.deny()
                     return
@@ -175,20 +184,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showEventPicker() {
-        val eventCodeInput = EditText(this).apply {
-            hint = "Contoh: dananglidya"
-            setText(terminalUrlStore.getUrl()?.let(::eventCodeFromUrl).orEmpty())
-            setSelection(text.length)
-            inputType = InputType.TYPE_CLASS_TEXT
-            setSingleLine(true)
-            setTextColor(Color.parseColor("#2B211D"))
-            setHintTextColor(Color.parseColor("#9A918B"))
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F5EEE9"))
-                cornerRadius = dp(14).toFloat()
-            }
+        val serverInput = if (BuildConfig.LOCAL_SERVER_ALLOWED) {
+            pickerInput(
+                hint = "Alamat server, mis. http://192.168.1.5:3021",
+                initialText = terminalUrlStore.getServerUrl(),
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
+            )
+        } else {
+            null
         }
+        val searchInput = pickerInput(
+            hint = "Cari nama pasangan atau kode acara",
+            initialText = "",
+            inputType = InputType.TYPE_CLASS_TEXT,
+        )
+        val eventList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scanQrButton = Button(this).apply {
             text = "Scan QR acara"
             isAllCaps = false
@@ -208,47 +218,141 @@ class MainActivity : ComponentActivity() {
         }
         val setupContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(
-                scanQrButton,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                eventCodeInput,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dp(10) },
-            )
+            serverInput?.let { addView(it, matchWidth(bottom = 10)) }
+            addView(scanQrButton, matchWidth())
+            addView(searchInput, matchWidth(top = 10))
+            addView(eventList, matchWidth(top = 10))
         }
 
         lateinit var setupDialog: android.app.Dialog
+
+        // Returns the server to use, or null after flagging the server field.
+        fun selectedServer(): String? {
+            if (serverInput == null) return BuildConfig.DEFAULT_SERVER_URL
+            val server = serverInput.text.toString().trim().trimEnd('/')
+            val uri = Uri.parse(server)
+            if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+                serverInput.error = "Contoh: http://192.168.1.5:3021"
+                return null
+            }
+            terminalUrlStore.saveServerUrl(server)
+            return server
+        }
+
+        fun lookUpTypedCode(): Boolean {
+            val server = selectedServer() ?: return false
+            val eventCode = searchInput.text.toString().trim().lowercase()
+            if (!isEventCode(eventCode)) {
+                searchInput.error = "Pilih acara dari daftar atau ketik kode acara lengkap, mis. dananglidya"
+                return false
+            }
+            validateAndConfirmEvent("$server/scan/$eventCode")
+            return true
+        }
+
+        fun renderEventList() {
+            eventList.removeAllViews()
+            // Dev: only events from the server typed above. Prod: every saved
+            // event, whatever HTTPS host its setup QR pointed at.
+            val devServer = serverInput?.text?.toString()?.trim()?.trimEnd('/')
+            val query = searchInput.text.toString().trim().lowercase()
+            val matches = recentEventStore.list()
+                .filter { devServer == null || it.terminalUrl.startsWith("$devServer/scan/") }
+                .filter { event ->
+                    query.isEmpty() ||
+                        event.coupleNames.lowercase().contains(query) ||
+                        event.code.contains(query)
+                }
+                .take(MAX_LISTED_EVENTS)
+
+            matches.forEach { event ->
+                val description = listOf(event.code, event.dateText)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                val row = EvowriaDialog.choiceRow(
+                    this,
+                    EvowriaDialog.Choice(event.coupleNames, description),
+                ).apply {
+                    setOnClickListener {
+                        setupDialog.dismiss()
+                        openTerminal(event.terminalUrl)
+                    }
+                }
+                eventList.addView(row, matchWidth(bottom = 8))
+            }
+
+            if (isEventCode(query) && matches.none { it.code == query }) {
+                val row = EvowriaDialog.choiceRow(
+                    this,
+                    EvowriaDialog.Choice("Cari kode \u201C$query\u201D", "Cek acara ini ke server"),
+                ).apply {
+                    setOnClickListener { if (lookUpTypedCode()) setupDialog.dismiss() }
+                }
+                eventList.addView(row, matchWidth(bottom = 8))
+            }
+
+            if (eventList.childCount == 0) {
+                eventList.addView(TextView(this).apply {
+                    text = if (query.isEmpty()) {
+                        "Belum ada acara yang pernah dibuka di perangkat ini. Scan QR atau ketik kode acara."
+                    } else {
+                        "Tidak ada acara tersimpan yang cocok. Ketik kode acara lengkap untuk mencarinya."
+                    }
+                    textSize = 13f
+                    setTextColor(Color.parseColor("#756B65"))
+                })
+            }
+        }
+
+        searchInput.doAfterTextChanged {
+            searchInput.error = null
+            renderEventList()
+        }
+        serverInput?.let { input ->
+            input.doAfterTextChanged {
+                input.error = null
+                renderEventList()
+            }
+        }
+        renderEventList()
+
         scanQrButton.setOnClickListener {
             setupDialog.dismiss()
             scanTerminalQr()
         }
         setupDialog = EvowriaDialog.showForm(
             context = this,
-            eyebrow = "Evowria check-in",
+            eyebrow = if (BuildConfig.LOCAL_SERVER_ALLOWED) "Evowria check-in \u00B7 DEV" else "Evowria check-in",
             title = "Pilih acara",
-            message = "Scan QR setup dari PIC Evowria atau masukkan kode acara. Nama pasangan akan ditampilkan sebelum meja dibuka.",
+            message = "Scan QR setup dari PIC Evowria, pilih acara yang pernah dibuka di perangkat ini, atau ketik kode acaranya. Nama pasangan akan ditampilkan sebelum meja dibuka.",
             content = setupContent,
             primaryLabel = "Cari acara",
-            onPrimary = {
-                _ ->
-                val eventCode = eventCodeInput.text.toString().trim().lowercase()
-                if (isEventCode(eventCode)) {
-                    validateAndConfirmEvent(TERMINAL_URL_PREFIX + eventCode)
-                    true
-                } else {
-                    eventCodeInput.error = "Masukkan kode acara, misalnya dananglidya"
-                    false
-                }
-            },
+            onPrimary = { _ -> lookUpTypedCode() },
             cancelable = terminalUrlStore.getUrl() != null,
         )
+    }
+
+    private fun pickerInput(hint: String, initialText: String, inputType: Int) = EditText(this).apply {
+        this.hint = hint
+        setText(initialText)
+        setSelection(text.length)
+        this.inputType = inputType
+        setSingleLine(true)
+        setTextColor(Color.parseColor("#2B211D"))
+        setHintTextColor(Color.parseColor("#9A918B"))
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = GradientDrawable().apply {
+            setColor(Color.parseColor("#F5EEE9"))
+            cornerRadius = dp(14).toFloat()
+        }
+    }
+
+    private fun matchWidth(top: Int = 0, bottom: Int = 0) = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+    ).apply {
+        topMargin = dp(top)
+        bottomMargin = dp(bottom)
     }
 
     private fun scanTerminalQr() {
@@ -262,7 +366,11 @@ class MainActivity : ComponentActivity() {
                         context = this,
                         eyebrow = "QR tidak sesuai",
                         title = "Gunakan QR acara",
-                        message = "Scan QR yang berisi link https://.../scan/kode-acara.",
+                        message = if (BuildConfig.LOCAL_SERVER_ALLOWED) {
+                            "Scan QR yang berisi link http(s)://.../scan/kode-acara."
+                        } else {
+                            "Scan QR yang berisi link https://.../scan/kode-acara."
+                        },
                     ).setOnDismissListener { showEventPicker() }
                 }
             }
@@ -334,7 +442,21 @@ class MainActivity : ComponentActivity() {
             title = "Gunakan acara ini?",
             message = "Pastikan acara sesuai sebelum petugas memasukkan PIN.",
             choices = listOf(EvowriaDialog.Choice(coupleNames, description)),
-            onSelected = { openTerminal(terminalUrl) },
+            onSelected = {
+                eventCodeFromUrl(terminalUrl)?.let { eventCode ->
+                    recentEventStore.remember(
+                        RecentEventStore.RecentEvent(
+                            terminalUrl = terminalUrl,
+                            code = eventCode,
+                            coupleNames = coupleNames,
+                            dateText = dateText,
+                            venue = venue,
+                            lastUsedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                openTerminal(terminalUrl)
+            },
             onCancelled = ::showEventPicker,
         )
     }
@@ -359,7 +481,9 @@ class MainActivity : ComponentActivity() {
 
     private fun isTerminalUrl(value: String): Boolean {
         val uri = Uri.parse(value)
-        return uri.scheme == "https" &&
+        val isAllowedScheme = uri.scheme == "https" ||
+            (BuildConfig.LOCAL_SERVER_ALLOWED && uri.scheme == "http")
+        return isAllowedScheme &&
             uri.host != null &&
             uri.path?.startsWith("/scan/") == true &&
             uri.pathSegments.getOrNull(1)?.isNotBlank() == true
@@ -394,7 +518,8 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val MENU_TERMINAL_URL = "Ganti acara"
         const val MENU_PRINTER = "Pilih printer"
-        const val TERMINAL_URL_PREFIX = "https://www.evowria.com/scan/"
+        const val MAX_LISTED_EVENTS = 6
+        val LOCAL_HOSTS = setOf("localhost", "127.0.0.1")
         const val NATIVE_BRIDGE_NAME = "AndroidPrinterConnector"
 
         val WEB_PRINTER_API_SCRIPT = """
