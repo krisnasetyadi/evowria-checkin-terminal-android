@@ -1,5 +1,12 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="AppTheme" parent="android:style/Theme.Material.Light">
         <item name="android:colorAccent">#9A472F</item>
+        <!-- Targeting SDK 35 makes Android 15 draw the WebView edge to edge,
+             under the status bar and this theme's action bar, so the top of
+             the check-in desk's panels was hidden on landscape tablets. Keep
+             the WebView below the bars as on older Android. Ignored once the
+             app targets SDK 36: by then MainActivity must pad the WebView by
+             its window insets (systemBars + displayCutout) instead. -->
+        <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
     </style>
 </resources>
