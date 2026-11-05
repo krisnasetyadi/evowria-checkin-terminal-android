@@ -14,7 +14,15 @@ import java.util.UUID
  * This class owns the socket. It does not show Android UI and does not know about WebView,
  * which keeps printer behaviour easy to test and replace for another printer protocol.
  */
-class BluetoothThermalPrinter {
+class BluetoothThermalPrinter(
+    /** Makes the table card's logo as a ready GS v 0 command; null = no logo. */
+    loadLogoRaster: () -> ByteArray? = { null },
+) {
+    // Built the first time a table card prints (on the printer thread, not
+    // while the app opens); an image that can't be read only drops the logo.
+    private val logoRaster: ByteArray? by lazy {
+        runCatching(loadLogoRaster).getOrNull()
+    }
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private val connectionLock = Any()
 
@@ -87,6 +95,71 @@ class BluetoothThermalPrinter {
     fun printGuestLabel(label: GuestLabel): PrintResult = try {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
+        if (label.blocks.isNotEmpty()) {
+            label.blocks.forEach { block -> output.write(blockBytes(block)) }
+        } else {
+            writeLegacyGiftLabel(output, label)
+        }
+        // A short grip area after each print on a common 58 mm thermal printer.
+        // This gives the usher enough paper to grip before tearing it off.
+        output.write(EscPosCommands.tearOffFeed)
+        output.write(EscPosCommands.feedAndPartialCut)
+        output.flush()
+        PrintResult(PrintJobStatus.PRINTED)
+    } catch (error: Exception) {
+        PrintResult(PrintJobStatus.FAILED, error.message ?: "Cetak gagal")
+    }
+
+    /**
+     * Draws one block laid out by the server. Sizes, bold and alignment are
+     * set per block and reset after it, so a block never leaks its style.
+     */
+    private fun blockBytes(block: PrintBlock): ByteArray = when (block) {
+        is PrintBlock.Text ->
+            alignCommand(block.align) +
+                styled(block.text, block.size, block.bold) +
+                newline
+        is PrintBlock.Row -> {
+            val usedColumns = block.left.length * block.leftSize.width +
+                block.right.length * block.rightSize.width
+            val gap = (NORMAL_LINE_CHARS - usedColumns).coerceAtLeast(1)
+            EscPosCommands.leftAlign +
+                styled(block.left, block.leftSize, block.bold) +
+                " ".repeat(gap).toByteArray(PRINTER_CHARSET) +
+                styled(block.right, block.rightSize, block.bold) +
+                newline
+        }
+        is PrintBlock.Divider ->
+            EscPosCommands.leftAlign +
+                (if (block.isSolid) "-".repeat(NORMAL_LINE_CHARS) else "- ".repeat(NORMAL_LINE_CHARS / 2))
+                    .toByteArray(PRINTER_CHARSET) +
+                newline
+        is PrintBlock.Cut ->
+            EscPosCommands.leftAlign + block.text.toByteArray(PRINTER_CHARSET) + newline
+        is PrintBlock.Feed -> "\n".repeat(block.lines).toByteArray(PRINTER_CHARSET)
+        PrintBlock.Logo ->
+            logoRaster?.let { EscPosCommands.leftAlign + it } ?: ByteArray(0)
+    }
+
+    private fun styled(text: String, size: PrintTextSize, bold: Boolean): ByteArray =
+        (if (bold) EscPosCommands.boldOn else EscPosCommands.boldOff) +
+            sizeCommand(size) +
+            text.toByteArray(PRINTER_CHARSET) +
+            EscPosCommands.sizeNormal +
+            EscPosCommands.boldOff
+
+    // GS ! n: high nibble = extra width, low nibble = extra height.
+    private fun sizeCommand(size: PrintTextSize) =
+        byteArrayOf(0x1D, 0x21, (((size.width - 1) shl 4) or (size.height - 1)).toByte())
+
+    private fun alignCommand(align: PrintAlign) = when (align) {
+        PrintAlign.LEFT -> EscPosCommands.leftAlign
+        PrintAlign.CENTER -> EscPosCommands.centerAlign
+        PrintAlign.RIGHT -> EscPosCommands.rightAlign
+    }
+
+    /** The gift label as printed before the server laid prints out. */
+    private fun writeLegacyGiftLabel(output: java.io.OutputStream, label: GuestLabel) {
         output.write(EscPosCommands.leftAlign)
         // One fact per caption + value, running down the paper. The caption
         // stays small; the value is printed large so the couple can read an
@@ -103,14 +176,6 @@ class BluetoothThermalPrinter {
             output.write(EscPosCommands.sizeNormal)
             output.write(EscPosCommands.boldOff)
         }
-        // A short grip area after each label on a common 58 mm thermal printer.
-        // This gives the usher enough paper to grip before tearing the label.
-        output.write(EscPosCommands.tearOffFeed)
-        output.write(EscPosCommands.feedAndPartialCut)
-        output.flush()
-        PrintResult(PrintJobStatus.PRINTED)
-    } catch (error: Exception) {
-        PrintResult(PrintJobStatus.FAILED, error.message ?: "Cetak label gagal")
     }
 
     fun disconnect() {
@@ -190,6 +255,8 @@ class BluetoothThermalPrinter {
     private object EscPosCommands {
         val initialize = byteArrayOf(0x1B, 0x40)
         val leftAlign = byteArrayOf(0x1B, 0x61, 0x00)
+        val centerAlign = byteArrayOf(0x1B, 0x61, 0x01)
+        val rightAlign = byteArrayOf(0x1B, 0x61, 0x02)
         val boldOn = byteArrayOf(0x1B, 0x45, 0x01)
         val boldOff = byteArrayOf(0x1B, 0x45, 0x00)
 
@@ -208,5 +275,6 @@ class BluetoothThermalPrinter {
         // A 58 mm printer fits 32 characters a line; double width halves that.
         const val NORMAL_LINE_CHARS = 32
         const val LARGE_LINE_CHARS = 16
+        val newline = "\n".toByteArray(PRINTER_CHARSET)
     }
 }

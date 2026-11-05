@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
         webPrinterBridge = WebPrinterBridge(
             activity = this,
             webView = terminalWebView,
-            printer = BluetoothThermalPrinter(),
+            printer = BluetoothThermalPrinter { PrintLogo.rasterCommand(resources) },
             requestBluetoothPermission = ::requestBluetoothPermission,
         )
 

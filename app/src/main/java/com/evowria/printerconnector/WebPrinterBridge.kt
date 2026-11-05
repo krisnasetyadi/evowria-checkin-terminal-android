@@ -21,7 +21,7 @@ class WebPrinterBridge(
 ) {
     private val printerExecutor = Executors.newSingleThreadExecutor()
     // A Bluetooth write can block at driver level. It must not occupy the
-    // bridge queue after the five-second guest-facing deadline expires.
+    // bridge queue after the guest-facing deadline expires.
     private val printerIoExecutor = Executors.newCachedThreadPool()
     private var pendingConnectionRequestId: String? = null
     private var shouldOpenPrinterPickerAfterPermission = false
@@ -100,7 +100,7 @@ class WebPrinterBridge(
                 printFuture.cancel(true)
                 PrintResult(
                     PrintJobStatus.UNKNOWN,
-                    "Cetak melebihi 5 detik. Periksa label fisik lalu hubungkan ulang printer.",
+                    "Cetak melebihi $PRINT_DEADLINE_SECONDS detik. Periksa kertas yang keluar lalu hubungkan ulang printer.",
                 )
             }
             send(requestId, result.toJson())
@@ -181,6 +181,8 @@ class WebPrinterBridge(
         const val METHOD_CONNECT = "connect"
         const val METHOD_TEST_PRINT = "testPrint"
         const val METHOD_PRINT_LABEL = "printGuestLabel"
-        const val PRINT_DEADLINE_SECONDS = 5L
+        // A table card with its logo is several kilobytes; slow printers need
+        // more than the old label's five seconds to take it all.
+        const val PRINT_DEADLINE_SECONDS = 10L
     }
 }
