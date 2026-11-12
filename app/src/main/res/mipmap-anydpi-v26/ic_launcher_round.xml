@@ -1,4 +1,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_evowria_terminal_background" />
-    <foreground android:drawable="@drawable/ic_evowria_terminal_foreground" />
+    <!-- The website logo (evowria/public/images/evowria-logo-mark.png), white
+         made transparent, 56dp wide inside the 108dp layer so the 66dp safe
+         zone keeps the leaf and wordmark on every launcher shape. -->
+    <foreground android:drawable="@drawable/ic_evowria_launcher_foreground" />
 </adaptive-icon>

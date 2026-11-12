@@ -137,7 +137,7 @@ class WebPrinterBridge(
             message = "Pilih printer yang sudah dipasangkan untuk meja check-in ini.",
             choices = pairedDevices.map { device ->
                 EvowriaDialog.Choice(
-                    title = device.name ?: "Thermal printer",
+                    title = device.displayName() ?: "Thermal printer",
                     description = device.address,
                 )
             },

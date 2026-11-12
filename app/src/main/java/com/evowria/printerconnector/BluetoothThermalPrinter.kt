@@ -4,9 +4,25 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
+import android.os.Build
 import java.io.IOException
 import java.nio.charset.Charset
 import java.util.UUID
+
+/**
+ * The printer's name as the team sees it on this tablet: the name given in
+ * Android's Bluetooth settings (alias, Android 11+), else the name the printer
+ * broadcasts. Renaming "Printer Meja 1" in settings then shows in the app.
+ */
+@SuppressLint("MissingPermission")
+fun BluetoothDevice.displayName(): String? {
+    val alias = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        runCatching { alias }.getOrNull()
+    } else {
+        null
+    }
+    return alias?.takeIf { it.isNotBlank() } ?: name
+}
 
 /**
  * Talks to a paired Bluetooth Classic printer using the common ESC/POS serial protocol.
@@ -35,7 +51,7 @@ class BluetoothThermalPrinter(
 
     @SuppressLint("MissingPermission")
     fun getPairedDevices(): List<BluetoothDevice> =
-        bluetoothAdapter?.bondedDevices?.sortedBy { device -> device.name ?: device.address }
+        bluetoothAdapter?.bondedDevices?.sortedBy { device -> device.displayName() ?: device.address }
             ?: emptyList()
 
     @SuppressLint("MissingPermission")
@@ -77,7 +93,7 @@ class BluetoothThermalPrinter(
         return PrinterStatus(
             available = bluetoothAdapter != null,
             connected = isConnected,
-            printerName = device?.name ?: device?.address,
+            printerName = device?.displayName() ?: device?.address,
             detail = if (isConnected) null else "Printer belum terhubung",
         )
     }
