@@ -9,4 +9,10 @@
              its window insets (systemBars + displayCutout) instead. -->
         <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
     </style>
+    <!-- The event QR camera screen (QrScanActivity): full black, no action
+         bar, kept below the system bars like AppTheme. -->
+    <style name="ScanTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
+    </style>
 </resources>

@@ -15,6 +15,11 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        // Real tablets are ARM; x86 builds of ML Kit's native scanner (~12 MB)
+        // are only for emulators.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildFeatures {
@@ -60,5 +65,10 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-ktx:1.10.0")
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Event QR scanner: bundled ML Kit model (inside the APK, works offline,
+    // no Play services download) + CameraX for our own camera screen.
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
 }

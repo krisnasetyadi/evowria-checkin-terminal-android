@@ -24,9 +24,6 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.widget.doAfterTextChanged
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -38,14 +35,14 @@ class MainActivity : ComponentActivity() {
     private lateinit var recentEventStore: RecentEventStore
     private lateinit var webPrinterBridge: WebPrinterBridge
     private var pendingCameraRequest: PermissionRequest? = null
-    private val terminalQrScanner by lazy {
-        GmsBarcodeScanning.getClient(
-            this,
-            GmsBarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .enableAutoZoom()
-                .build(),
-        )
+    // Our own camera screen with the bundled ML Kit model (QrScanActivity),
+    // so the event QR scans without Google Play services or internet.
+    private val terminalQrScan = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val scanned = result.data?.getStringExtra(QrScanActivity.EXTRA_VALUE)
+        if (result.resultCode == RESULT_OK && scanned != null) onTerminalQrScanned(scanned)
+        else showEventPicker()
     }
 
     private val bluetoothPermissionRequest = registerForActivityResult(
@@ -356,33 +353,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun scanTerminalQr() {
-        terminalQrScanner.startScan()
-            .addOnSuccessListener { barcode ->
-                val terminalUrl = barcode.rawValue?.trim().orEmpty()
-                if (isTerminalUrl(terminalUrl)) {
-                    validateAndConfirmEvent(terminalUrl)
-                } else {
-                    EvowriaDialog.showNotice(
-                        context = this,
-                        eyebrow = "QR tidak sesuai",
-                        title = "Gunakan QR acara",
-                        message = if (BuildConfig.LOCAL_SERVER_ALLOWED) {
-                            "Scan QR yang berisi link http(s)://.../scan/kode-acara."
-                        } else {
-                            "Scan QR yang berisi link https://.../scan/kode-acara."
-                        },
-                    ).setOnDismissListener { showEventPicker() }
-                }
-            }
-            .addOnCanceledListener { showEventPicker() }
-            .addOnFailureListener {
-                EvowriaDialog.showNotice(
-                    context = this,
-                    eyebrow = "Scanner belum siap",
-                    title = "QR belum dapat dipindai",
-                    message = "Pastikan Google Play services dan koneksi internet tersedia, lalu coba lagi.",
-                ).setOnDismissListener { showEventPicker() }
-            }
+        terminalQrScan.launch(Intent(this, QrScanActivity::class.java))
+    }
+
+    private fun onTerminalQrScanned(value: String) {
+        val terminalUrl = value.trim()
+        if (isTerminalUrl(terminalUrl)) {
+            validateAndConfirmEvent(terminalUrl)
+            return
+        }
+        EvowriaDialog.showNotice(
+            context = this,
+            eyebrow = "QR tidak sesuai",
+            title = "Gunakan QR acara",
+            message = if (BuildConfig.LOCAL_SERVER_ALLOWED) {
+                "Scan QR yang berisi link http(s)://.../scan/kode-acara."
+            } else {
+                "Scan QR yang berisi link https://.../scan/kode-acara."
+            },
+        ).setOnDismissListener { showEventPicker() }
     }
 
     private fun validateAndConfirmEvent(terminalUrl: String) {
