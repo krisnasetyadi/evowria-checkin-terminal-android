@@ -2,7 +2,12 @@ package com.evowria.printerconnector
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -23,6 +28,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.core.widget.doAfterTextChanged
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -35,6 +42,27 @@ class MainActivity : ComponentActivity() {
     private lateinit var recentEventStore: RecentEventStore
     private lateinit var webPrinterBridge: WebPrinterBridge
     private var pendingCameraRequest: PermissionRequest? = null
+    private lateinit var printer: BluetoothThermalPrinter
+    private val bluetoothLinkReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    val device = IntentCompat.getParcelableExtra(
+                        intent,
+                        BluetoothDevice.EXTRA_DEVICE,
+                        BluetoothDevice::class.java,
+                    )
+                    printer.onLinkLost(device?.address)
+                }
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
+                    if (state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF) {
+                        printer.onBluetoothOff()
+                    }
+                }
+            }
+        }
+    }
     // Our own camera screen with the bundled ML Kit model (QrScanActivity),
     // so the event QR scans without Google Play services or internet.
     private val terminalQrScan = registerForActivityResult(
@@ -74,11 +102,23 @@ class MainActivity : ComponentActivity() {
         terminalUrlStore = TerminalUrlStore(this)
         recentEventStore = RecentEventStore(this)
         terminalWebView = WebView(this)
+        printer = BluetoothThermalPrinter { PrintLogo.rasterCommand(resources) }
         webPrinterBridge = WebPrinterBridge(
             activity = this,
             webView = terminalWebView,
-            printer = BluetoothThermalPrinter { PrintLogo.rasterCommand(resources) },
+            printer = printer,
             requestBluetoothPermission = ::requestBluetoothPermission,
+        )
+        // A printer switched off still looks connected to its socket: listen
+        // for Android's own "link lost" so the desk's status turns red.
+        ContextCompat.registerReceiver(
+            this,
+            bluetoothLinkReceiver,
+            IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
         )
 
         setContentView(terminalWebView)
@@ -105,6 +145,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(bluetoothLinkReceiver) }
         webPrinterBridge.close()
         terminalWebView.destroy()
         super.onDestroy()

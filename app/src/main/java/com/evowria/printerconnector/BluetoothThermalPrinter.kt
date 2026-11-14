@@ -105,6 +105,7 @@ class BluetoothThermalPrinter(
         output.flush()
         PrintResult(PrintJobStatus.PRINTED)
     } catch (error: Exception) {
+        dropBrokenLink(error)
         PrintResult(PrintJobStatus.FAILED, error.message ?: "Test print gagal")
     }
 
@@ -123,6 +124,7 @@ class BluetoothThermalPrinter(
         output.flush()
         PrintResult(PrintJobStatus.PRINTED)
     } catch (error: Exception) {
+        dropBrokenLink(error)
         PrintResult(PrintJobStatus.FAILED, error.message ?: "Cetak gagal")
     }
 
@@ -192,6 +194,28 @@ class BluetoothThermalPrinter(
             output.write(EscPosCommands.sizeNormal)
             output.write(EscPosCommands.boldOff)
         }
+    }
+
+    /**
+     * Android says the Bluetooth link to [address] is gone (the printer was
+     * switched off, its battery died, or it went out of range). The socket
+     * itself still says "connected" until something is written, so without
+     * this the desk kept showing a green printer.
+     */
+    fun onLinkLost(address: String?) {
+        val isOurPrinter = synchronized(connectionLock) {
+            address != null && connectedPrinter?.address == address
+        }
+        if (isOurPrinter) disconnect()
+    }
+
+    /** Bluetooth was switched off on the tablet: no printer can be reached. */
+    fun onBluetoothOff() = disconnect()
+
+    // A write that fails with an I/O error means the link is broken: drop it
+    // so the status turns red at once and "Hubungkan printer" shows.
+    private fun dropBrokenLink(error: Exception) {
+        if (error is IOException) disconnect()
     }
 
     fun disconnect() {
