@@ -19,6 +19,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.webkit.WebChromeClient
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -42,6 +43,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var recentEventStore: RecentEventStore
     private lateinit var webPrinterBridge: WebPrinterBridge
     private var pendingCameraRequest: PermissionRequest? = null
+    // The page's <input type="file"> waiting for the system picker's answer.
+    private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
     private lateinit var printer: BluetoothThermalPrinter
     private val bluetoothLinkReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -78,6 +81,17 @@ class MainActivity : ComponentActivity() {
     ) { permissionGranted ->
         if (permissionGranted) webPrinterBridge.continueConnectionAfterPermissionGranted()
         else webPrinterBridge.failPendingConnectionForMissingPermission()
+    }
+
+    private val fileChooserRequest = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val callback = pendingFileChooser
+        pendingFileChooser = null
+        // Always answer, even with null, or the page's picker never opens again.
+        callback?.onReceiveValue(
+            WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data),
+        )
     }
 
     private val cameraPermissionRequest = registerForActivityResult(
@@ -183,6 +197,24 @@ class MainActivity : ComponentActivity() {
             override fun onPermissionRequestCanceled(request: PermissionRequest) {
                 if (pendingCameraRequest === request) pendingCameraRequest = null
                 super.onPermissionRequestCanceled(request)
+            }
+
+            // Without this a WebView ignores every <input type="file">: the
+            // desk's "Pilih dari galeri" and "Foto bukti" did nothing in the app.
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams,
+            ): Boolean {
+                pendingFileChooser?.onReceiveValue(null)
+                pendingFileChooser = filePathCallback
+                return try {
+                    fileChooserRequest.launch(fileChooserParams.createIntent())
+                    true
+                } catch (_: ActivityNotFoundException) {
+                    pendingFileChooser = null
+                    false
+                }
             }
         }
         terminalWebView.webViewClient = object : WebViewClient() {
