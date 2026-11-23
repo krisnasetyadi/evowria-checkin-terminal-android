@@ -18,6 +18,8 @@ class WebPrinterBridge(
     private val webView: WebView,
     private val printer: BluetoothThermalPrinter,
     private val requestBluetoothPermission: () -> Unit,
+    /** "Ganti acara" from the desk's menu: the app's event picker. */
+    private val changeEvent: () -> Unit,
 ) {
     private val printerExecutor = Executors.newSingleThreadExecutor()
     // A Bluetooth write can block at driver level. It must not occupy the
@@ -35,6 +37,10 @@ class WebPrinterBridge(
                     METHOD_CONNECT -> requestConnection(requestId)
                     METHOD_TEST_PRINT -> send(requestId, printer.printTestPage().toJson())
                     METHOD_PRINT_LABEL -> printLabel(requestId, rawPayload)
+                    METHOD_CHANGE_EVENT -> {
+                        activity.runOnUiThread { changeEvent() }
+                        send(requestId, JSONObject().put("status", "OPENED"))
+                    }
                     else -> sendError(requestId, "Metode printer tidak dikenal")
                 }
             } catch (error: Exception) {
@@ -181,6 +187,7 @@ class WebPrinterBridge(
         const val METHOD_CONNECT = "connect"
         const val METHOD_TEST_PRINT = "testPrint"
         const val METHOD_PRINT_LABEL = "printGuestLabel"
+        const val METHOD_CHANGE_EVENT = "changeEvent"
         // A table card with its logo is several kilobytes; slow printers need
         // more than the old label's five seconds to take it all.
         const val PRINT_DEADLINE_SECONDS = 10L

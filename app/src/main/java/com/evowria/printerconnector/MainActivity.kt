@@ -15,8 +15,6 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
-import android.view.Menu
-import android.view.MenuItem
 import android.webkit.WebChromeClient
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
@@ -28,9 +26,13 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.widget.doAfterTextChanged
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -122,6 +124,7 @@ class MainActivity : ComponentActivity() {
             webView = terminalWebView,
             printer = printer,
             requestBluetoothPermission = ::requestBluetoothPermission,
+            changeEvent = ::showEventPicker,
         )
         // A printer switched off still looks connected to its socket: listen
         // for Android's own "link lost" so the desk's status turns red.
@@ -137,25 +140,28 @@ class MainActivity : ComponentActivity() {
 
         setContentView(terminalWebView)
         configureWebView()
+        hideSystemBars()
+        // No top bar any more (owner, 2026-11-23): "Ganti acara" is in the
+        // desk's menu, the printer in its status. Back is the way out when
+        // the page itself can't open (offline, wrong event): it opens
+        // "Pilih acara" instead of closing the app in front of guests.
+        onBackPressedDispatcher.addCallback(this) { showEventPicker() }
         openSavedTerminal()
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(MENU_TERMINAL_URL).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-        menu.add(MENU_PRINTER).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-        return true
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // A dialog, the camera screen or another app may bring the bars back.
+        if (hasFocus) hideSystemBars()
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.title) {
-        MENU_TERMINAL_URL -> {
-            showEventPicker()
-            true
+    /** The whole screen is the desk: status and navigation bars stay hidden
+     *  and come back for a moment only when swiped in from an edge. */
+    private fun hideSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
         }
-        MENU_PRINTER -> {
-            webPrinterBridge.showPrinterPicker()
-            true
-        }
-        else -> super.onOptionsItemSelected(item)
     }
 
     override fun onDestroy() {
@@ -578,8 +584,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val MENU_TERMINAL_URL = "Ganti acara"
-        const val MENU_PRINTER = "Pilih printer"
         const val MAX_LISTED_EVENTS = 6
         val LOCAL_HOSTS = setOf("localhost", "127.0.0.1")
         const val NATIVE_BRIDGE_NAME = "AndroidPrinterConnector"
@@ -606,6 +610,7 @@ class MainActivity : ComponentActivity() {
                 connect: () => callNativePrinter('connect'),
                 testPrint: () => callNativePrinter('testPrint'),
                 printGuestLabel: (label) => callNativePrinter('printGuestLabel', label),
+                changeEvent: () => callNativePrinter('changeEvent'),
               };
             })();
         """.trimIndent()

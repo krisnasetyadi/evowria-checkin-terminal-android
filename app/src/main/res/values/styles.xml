@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="AppTheme" parent="android:style/Theme.Material.Light">
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:colorAccent">#9A472F</item>
         <!-- Targeting SDK 35 makes Android 15 draw the WebView edge to edge,
              under the status bar and this theme's action bar, so the top of
