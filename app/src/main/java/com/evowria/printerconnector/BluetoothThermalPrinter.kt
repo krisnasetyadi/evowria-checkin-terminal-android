@@ -99,12 +99,14 @@ class BluetoothThermalPrinter(
     }
 
     /** On sticker paper: one framed test sticker, then on to the next one. */
-    fun printTestPage(paper: PrinterPaper): PrintResult = try {
+    /** [feedDots]: the gap to feed after the test sticker, as after a real
+     *  one; null = the printer's own "next label". */
+    fun printTestPage(paper: PrinterPaper, feedDots: Int? = null): PrintResult = try {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
         if (paper == PrinterPaper.STICKER_50X30) {
             output.write(StickerTestPage.rasterCommand())
-            output.write(EscPosCommands.nextLabel)
+            writeStickerFeed(output, feedDots)
         } else {
             output.write("Evowria test print\n\n\n".toByteArray(PRINTER_CHARSET))
         }
@@ -148,7 +150,15 @@ class BluetoothThermalPrinter(
 
     private fun writeSticker(output: java.io.OutputStream, image: StickerImage) {
         output.write(EscPosRaster.command(image.bytesPerRow, image.height, image.dots))
-        val feedDots = image.feedDots
+        writeStickerFeed(output, image.feedDots)
+    }
+
+    /**
+     * On to the next sticker: a fixed feed over the gap when the server
+     * sends one (the EP5881 doesn't stop at the gap by itself, so 30 mm
+     * stickers with a 3 mm gap need exactly 24 dots), else GS FF.
+     */
+    private fun writeStickerFeed(output: java.io.OutputStream, feedDots: Int?) {
         if (feedDots == null) {
             output.write(EscPosCommands.nextLabel)
         } else {

@@ -37,7 +37,10 @@ class WebPrinterBridge(
                     METHOD_CONNECT -> requestConnection(requestId)
                     METHOD_TEST_PRINT -> send(
                         requestId,
-                        printer.printTestPage(testPaper(rawPayload)).toJson(),
+                        printer.printTestPage(
+                            testPaper(rawPayload),
+                            testFeedDots(rawPayload),
+                        ).toJson(),
                     )
                     METHOD_PRINT_LABEL -> printLabel(requestId, rawPayload)
                     METHOD_CHANGE_EVENT -> {
@@ -93,6 +96,13 @@ class WebPrinterBridge(
     private fun testPaper(rawPayload: String) = PrinterPaper.fromKey(
         runCatching { JSONObject(rawPayload).optString("paper") }.getOrNull(),
     )
+
+    /** The gap the desk sends with "Tes cetak" on stickers (null if none). */
+    private fun testFeedDots(rawPayload: String): Int? = runCatching {
+        JSONObject(rawPayload).takeIf { it.has("feedDots") }
+            ?.optInt("feedDots")
+            ?.coerceIn(0, MAX_FEED_DOTS)
+    }.getOrNull()
 
     private fun requestConnection(requestId: String) {
         pendingConnectionRequestId = requestId
@@ -199,5 +209,7 @@ class WebPrinterBridge(
         // A table card with its logo is several kilobytes; slow printers need
         // more than the old label's five seconds to take it all.
         const val PRINT_DEADLINE_SECONDS = 10L
+        // 10 mm: far more than any gap between stickers.
+        const val MAX_FEED_DOTS = 80
     }
 }
