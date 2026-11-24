@@ -35,7 +35,10 @@ class WebPrinterBridge(
                 when (methodName) {
                     METHOD_GET_STATUS -> send(requestId, printer.getStatus().toJson())
                     METHOD_CONNECT -> requestConnection(requestId)
-                    METHOD_TEST_PRINT -> send(requestId, printer.printTestPage().toJson())
+                    METHOD_TEST_PRINT -> send(
+                        requestId,
+                        printer.printTestPage(testPaper(rawPayload)).toJson(),
+                    )
                     METHOD_PRINT_LABEL -> printLabel(requestId, rawPayload)
                     METHOD_CHANGE_EVENT -> {
                         activity.runOnUiThread { changeEvent() }
@@ -85,6 +88,11 @@ class WebPrinterBridge(
         printerIoExecutor.shutdownNow()
         printer.disconnect()
     }
+
+    /** The event's paper the desk sends with "Tes cetak" (receipt if none). */
+    private fun testPaper(rawPayload: String) = PrinterPaper.fromKey(
+        runCatching { JSONObject(rawPayload).optString("paper") }.getOrNull(),
+    )
 
     private fun requestConnection(requestId: String) {
         pendingConnectionRequestId = requestId

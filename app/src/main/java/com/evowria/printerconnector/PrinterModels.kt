@@ -1,5 +1,6 @@
 package com.evowria.printerconnector
 
+import android.util.Base64
 import org.json.JSONObject
 
 enum class PrintJobStatus {
@@ -17,6 +18,9 @@ data class PrinterStatus(
     fun toJson(): JSONObject = JSONObject().apply {
         put("available", available)
         put("connected", connected)
+        // This app prints the server's sticker images (GuestLabel.image);
+        // the desk only sends stickers to apps that say so.
+        put("canPrintSticker", true)
         printerName?.let { put("printerName", it) }
         detail?.let { put("detail", it) }
     }
@@ -114,6 +118,56 @@ enum class PrintAlign(val key: String) {
     }
 }
 
+/** The event's paper (evowria constants/checkin-print.ts CHECKIN_PRINTER_PAPER). */
+enum class PrinterPaper(val key: String) {
+    RECEIPT_58("RECEIPT_58"),
+    STICKER_50X30("STICKER_50X30");
+
+    companion object {
+        fun fromKey(key: String?) = entries.firstOrNull { it.key == key } ?: RECEIPT_58
+    }
+}
+
+/**
+ * One sticker drawn by the server (evowria lib/checkin-sticker.tsx) as
+ * printer dots: rows of width / 8 bytes, leftmost dot in the high bit,
+ * 1 = black.
+ */
+class StickerImage(
+    val width: Int,
+    val height: Int,
+    val dots: ByteArray,
+    /** Dots to feed after the sticker; null = the printer's own "next label"
+     *  (GS FF), which stops at the gap between stickers. */
+    val feedDots: Int?,
+) {
+    val bytesPerRow get() = width / 8
+
+    companion object {
+        /** Null when the image is missing or doesn't add up: nothing printed. */
+        fun fromJson(json: JSONObject?): StickerImage? {
+            json ?: return null
+            val width = json.optInt("width")
+            val height = json.optInt("height")
+            if (width <= 0 || width % 8 != 0 || width > EscPosRaster.PAPER_DOTS) return null
+            if (height <= 0 || height > MAX_HEIGHT_DOTS) return null
+            val dots = runCatching {
+                Base64.decode(json.optString("raster"), Base64.DEFAULT)
+            }.getOrNull() ?: return null
+            if (dots.size != width / 8 * height) return null
+            val feedDots = if (json.has("feedDots")) {
+                json.optInt("feedDots").coerceIn(0, MAX_HEIGHT_DOTS)
+            } else {
+                null
+            }
+            return StickerImage(width, height, dots, feedDots)
+        }
+
+        // 10 cm: far more than a sticker; refuses a runaway image.
+        private const val MAX_HEIGHT_DOTS = 800
+    }
+}
+
 data class GuestLabel(
     val guestCode: String,
     val guestName: String,
@@ -124,6 +178,9 @@ data class GuestLabel(
     /** The print laid out by the server; empty from an older server, which
      *  gets the old gift label drawn from the fields above. */
     val blocks: List<PrintBlock> = emptyList(),
+    val paper: PrinterPaper = PrinterPaper.RECEIPT_58,
+    /** Sticker paper: the whole print as one image (blocks are ignored). */
+    val image: StickerImage? = null,
 ) {
     companion object {
         fun fromJson(json: JSONObject): GuestLabel = GuestLabel(
@@ -138,6 +195,8 @@ data class GuestLabel(
                     array.optJSONObject(index)?.let(PrintBlock::fromJson)
                 }
             } ?: emptyList(),
+            paper = PrinterPaper.fromKey(json.textOrNull("paper")),
+            image = StickerImage.fromJson(json.optJSONObject("image")),
         )
 
         // optString turns a JSON null into the text "null", which would be

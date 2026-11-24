@@ -608,7 +608,7 @@ class MainActivity : ComponentActivity() {
               window.EvowriaPrinter = {
                 getPrinterStatus: () => callNativePrinter('getPrinterStatus'),
                 connect: () => callNativePrinter('connect'),
-                testPrint: () => callNativePrinter('testPrint'),
+                testPrint: (options) => callNativePrinter('testPrint', options),
                 printGuestLabel: (label) => callNativePrinter('printGuestLabel', label),
                 changeEvent: () => callNativePrinter('changeEvent'),
               };

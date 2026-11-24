@@ -98,10 +98,16 @@ class BluetoothThermalPrinter(
         )
     }
 
-    fun printTestPage(): PrintResult = try {
+    /** On sticker paper: one framed test sticker, then on to the next one. */
+    fun printTestPage(paper: PrinterPaper): PrintResult = try {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
-        output.write("Evowria test print\n\n\n".toByteArray(PRINTER_CHARSET))
+        if (paper == PrinterPaper.STICKER_50X30) {
+            output.write(StickerTestPage.rasterCommand())
+            output.write(EscPosCommands.nextLabel)
+        } else {
+            output.write("Evowria test print\n\n\n".toByteArray(PRINTER_CHARSET))
+        }
         output.flush()
         PrintResult(PrintJobStatus.PRINTED)
     } catch (error: Exception) {
@@ -109,23 +115,51 @@ class BluetoothThermalPrinter(
         PrintResult(PrintJobStatus.FAILED, error.message ?: "Test print gagal")
     }
 
-    fun printGuestLabel(label: GuestLabel): PrintResult = try {
+    fun printGuestLabel(label: GuestLabel): PrintResult = if (
+        label.paper == PrinterPaper.STICKER_50X30 && label.image == null
+    ) {
+        // A receipt's text and cut on a sticker roll would waste stickers
+        // and shift every one after it: nothing is sent.
+        PrintResult(PrintJobStatus.FAILED, "Gambar stiker tidak terbaca. Coba cetak lagi.")
+    } else try {
         val output = requireOutputStream()
         output.write(EscPosCommands.initialize)
-        if (label.blocks.isNotEmpty()) {
-            label.blocks.forEach { block -> output.write(blockBytes(block)) }
+        if (label.image != null) {
+            // A sticker: the server's image as is, then on to the next
+            // sticker (no tear-off feed, no cut).
+            writeSticker(output, label.image)
         } else {
-            writeLegacyGiftLabel(output, label)
+            if (label.blocks.isNotEmpty()) {
+                label.blocks.forEach { block -> output.write(blockBytes(block)) }
+            } else {
+                writeLegacyGiftLabel(output, label)
+            }
+            // A short grip area after each print on a common 58 mm thermal
+            // printer, enough paper to grip before tearing it off.
+            output.write(EscPosCommands.tearOffFeed)
+            output.write(EscPosCommands.feedAndPartialCut)
         }
-        // A short grip area after each print on a common 58 mm thermal printer.
-        // This gives the usher enough paper to grip before tearing it off.
-        output.write(EscPosCommands.tearOffFeed)
-        output.write(EscPosCommands.feedAndPartialCut)
         output.flush()
         PrintResult(PrintJobStatus.PRINTED)
     } catch (error: Exception) {
         dropBrokenLink(error)
         PrintResult(PrintJobStatus.FAILED, error.message ?: "Cetak gagal")
+    }
+
+    private fun writeSticker(output: java.io.OutputStream, image: StickerImage) {
+        output.write(EscPosRaster.command(image.bytesPerRow, image.height, image.dots))
+        val feedDots = image.feedDots
+        if (feedDots == null) {
+            output.write(EscPosCommands.nextLabel)
+        } else {
+            // ESC J n feeds n dots, at most 255 a time.
+            var rest = feedDots
+            while (rest > 0) {
+                val step = rest.coerceAtMost(255)
+                output.write(byteArrayOf(0x1B, 0x4A, step.toByte()))
+                rest -= step
+            }
+        }
     }
 
     /**
@@ -306,6 +340,9 @@ class BluetoothThermalPrinter(
         val sizeLarge = byteArrayOf(0x1D, 0x21, 0x11)
         val tearOffFeed = "\n".repeat(4).toByteArray(PRINTER_CHARSET)
         val feedAndPartialCut = byteArrayOf(0x1D, 0x56, 0x01)
+
+        // GS FF: feed to the start of the next label (label/gap mode).
+        val nextLabel = byteArrayOf(0x1D, 0x0C)
     }
 
     private companion object {
